@@ -1,20 +1,31 @@
 #!/usr/bin/env python3
 """
 Programmer's Calculator - A polished calculator with decimal/hex conversion
+Updated with JSON config, pending op display, and smart ESC.
 """
 
 import sys
 import json
+import os
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QPushButton, QLabel, QDialog, QDialogButtonBox,
-    QCheckBox, QFontDialog, QScrollArea, QFrame
+    QCheckBox, QFontDialog, QScrollArea, QFrame, QMessageBox
 )
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QKeyEvent, QAction
 import qdarktheme
 
+
+def get_app_path():
+    """Resolve the correct path for both script and frozen (PyInstaller) execution."""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled EXE
+        return Path(sys.executable).parent
+    else:
+        # Running as script
+        return Path(__file__).parent
 
 
 class SettingsDialog(QDialog):
@@ -24,19 +35,24 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.resize(400, 200)
+        self.resize(275, 150)
         
         layout = QVBoxLayout()
         
         # Hex prefix option
         self.hex_prefix_check = QCheckBox("Show '0x' prefix for hex numbers")
-        self.hex_prefix_check.setChecked(parent.settings.value("hex_prefix", True, type=bool))
+        self.hex_prefix_check.setChecked(parent.config.get("hex_prefix", True))
         layout.addWidget(self.hex_prefix_check)
         
         # Binary prefix option
         self.bin_prefix_check = QCheckBox("Show '0b' prefix for binary numbers")
-        self.bin_prefix_check.setChecked(parent.settings.value("bin_prefix", True, type=bool))
+        self.bin_prefix_check.setChecked(parent.config.get("bin_prefix", True))
         layout.addWidget(self.bin_prefix_check)
+
+        # Commas option
+        self.commas_check = QCheckBox("Show thousands separator (e.g. 1,000)")
+        self.commas_check.setChecked(parent.config.get("show_commas", False))
+        layout.addWidget(self.commas_check)
         
         # Font selection
         font_layout = QHBoxLayout()
@@ -52,7 +68,7 @@ class SettingsDialog(QDialog):
         
         # Dialog buttons
         button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | 
+            QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel
         )
         button_box.accepted.connect(self.accept)
@@ -76,8 +92,8 @@ class HistoryPanel(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Sunken)
-        self.setMaximumWidth(200)
-        self.setMinimumWidth(180)
+        self.setMaximumWidth(320)
+        self.setMinimumWidth(320)
         
         layout = QVBoxLayout()
         layout.setContentsMargins(8, 8, 8, 8)
@@ -138,12 +154,25 @@ class ProgrammerCalculator(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.settings = QSettings("ProgrammerCalc", "Calculator")
         
+        # Default config
+        self.config = {
+            "hex_prefix": True,
+            "bin_prefix": True,
+            "show_commas": False,
+            "display_font": None
+        }
+        self.config_file = get_app_path() / "config.json"
+
         # Calculator state
         self.current_value = 0
         self.stored_value = 0
         self.operation = None
+        
+        # Repeat operation state
+        self.last_operation = None
+        self.last_operand = None
+        
         self.hex_mode = False  # False = decimal, True = hex
         self.new_number = True
         
@@ -170,6 +199,9 @@ class ProgrammerCalculator(QMainWindow):
         display_layout = QVBoxLayout()
         display_layout.setContentsMargins(10, 10, 10, 10)
         
+        # Top info row (Mode + Pending Op)
+        info_layout = QHBoxLayout()
+        
         # Mode indicator
         self.mode_label = QLabel("DEC")
         mode_font = QFont()
@@ -177,14 +209,23 @@ class ProgrammerCalculator(QMainWindow):
         mode_font.setPointSize(9)
         self.mode_label.setFont(mode_font)
         self.mode_label.setStyleSheet("color: #0066cc;")
-        display_layout.addWidget(self.mode_label)
+        info_layout.addWidget(self.mode_label)
+        
+        info_layout.addStretch()
+        
+        # Pending Operation Indicator
+        self.op_label = QLabel("")
+        self.op_label.setFont(mode_font)
+        self.op_label.setStyleSheet("color: #ffa500;") # Orange for visibility
+        info_layout.addWidget(self.op_label)
+        
+        display_layout.addLayout(info_layout)
         
         # Main display
         self.display = QLabel("0")
         self.display.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         display_font = QFont("Consolas", 24)
         self.display.setFont(display_font)
-        # self.display.setStyleSheet("padding: 10px; background-color: white;")
         self.display.setMinimumHeight(60)
         display_layout.addWidget(self.display)
         
@@ -247,17 +288,17 @@ class ProgrammerCalculator(QMainWindow):
             elif action == "clear":
                 btn.clicked.connect(self.clear_all)
             elif action == "clear_entry":
-                btn.clicked.connect(self.clear_entry)
+                btn.clicked.connect(self.handle_escape) # Map CE button to same smart logic if desired, or keep as clear_entry
             
             button_layout.addWidget(btn, row, col)
         
         calc_layout.addLayout(button_layout)
         
         # Mode switch hint
-        hint = QLabel("Press 'C' for DEC mode, 'X' for HEX mode")
-        hint.setStyleSheet("color: #666; font-size: 9pt;")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        calc_layout.addWidget(hint)
+        # hint = QLabel("Press 'C' for DEC mode, 'X' for HEX mode")
+        # hint.setStyleSheet("color: #666; font-size: 9pt;")
+        # hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # calc_layout.addWidget(hint)
         
         main_layout.addLayout(calc_layout)
         
@@ -291,38 +332,56 @@ class ProgrammerCalculator(QMainWindow):
         help_menu.addAction(shortcuts_action)
         
         # Set window properties
-        self.setMinimumSize(600, 500)
-        self.resize(650, 500)
+        size_w = 700
+        size_h = 540
+        self.setMinimumSize(size_w, size_h)
+        self.setMaximumSize(size_w, size_h)
+        self.resize(size_w, size_h)
+        # Prevent resize
+        self.setFixedSize(size_w, size_h)
+        # Prevent maximize
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowMaximizeButtonHint)
         
         self.update_display()
         self.update_hex_buttons()
     
     def load_settings(self):
-        """Load settings from QSettings"""
-        # Load font
-        font_str = self.settings.value("display_font", None)
+        """Load settings from JSON file"""
+        if self.config_file.exists():
+            try:
+                with open(self.config_file, 'r') as f:
+                    saved_config = json.load(f)
+                    self.config.update(saved_config)
+            except Exception as e:
+                print(f"Error loading config: {e}")
+
+        # Apply Font
+        font_str = self.config.get("display_font")
         if font_str:
             font = QFont()
             if font.fromString(font_str):
                 self.display.setFont(font)
     
     def save_settings(self):
-        """Save settings to QSettings"""
-        self.settings.setValue("hex_prefix", self.settings.value("hex_prefix", True))
-        self.settings.setValue("bin_prefix", self.settings.value("bin_prefix", True))
-        self.settings.setValue("display_font", self.display.font().toString())
-    
+        """Save settings to JSON file"""
+        self.config["display_font"] = self.display.font().toString()
+        try:
+            with open(self.config_file, 'w') as f:
+                json.dump(self.config, f, indent=4)
+        except Exception as e:
+            print(f"Error saving config: {e}")
+            
     def show_settings(self):
         """Show settings dialog"""
         dialog = SettingsDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             # Apply settings
-            self.settings.setValue("hex_prefix", dialog.hex_prefix_check.isChecked())
-            self.settings.setValue("bin_prefix", dialog.bin_prefix_check.isChecked())
+            self.config["hex_prefix"] = dialog.hex_prefix_check.isChecked()
+            self.config["bin_prefix"] = dialog.bin_prefix_check.isChecked()
+            self.config["show_commas"] = dialog.commas_check.isChecked()
             
             if dialog.selected_font:
                 self.display.setFont(dialog.selected_font)
-                self.settings.setValue("display_font", dialog.selected_font.toString())
             
             self.update_display()
     
@@ -337,11 +396,10 @@ class ProgrammerCalculator(QMainWindow):
 <tr><td><b>+, -, *, /</b></td><td>Basic operations (numpad supported)</td></tr>
 <tr><td><b>%</b></td><td>Modulo</td></tr>
 <tr><td><b>Enter</b></td><td>Equals</td></tr>
-<tr><td><b>ESC</b></td><td>Clear current entry</td></tr>
+<tr><td><b>ESC</b></td><td>Clear pending op (1st press), then entry (2nd)</td></tr>
 <tr><td><b>Delete</b></td><td>Clear all</td></tr>
 </table>
         """
-        from PyQt6.QtWidgets import QMessageBox
         msg = QMessageBox(self)
         msg.setWindowTitle("Keyboard Shortcuts")
         msg.setTextFormat(Qt.TextFormat.RichText)
@@ -365,10 +423,8 @@ class ProgrammerCalculator(QMainWindow):
         
         # Mode switching
         elif text == 'C' and not self.hex_mode:
-            # Already in decimal mode, do nothing special
             pass
         elif text == 'X':
-            # Toggle hex mode
             if self.hex_mode:
                 self.switch_mode(False)
             else:
@@ -394,9 +450,9 @@ class ProgrammerCalculator(QMainWindow):
         elif key in [Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Equal]:
             self.equals_pressed()
         
-        # Clear
+        # Clear / Smart ESC
         elif key == Qt.Key.Key_Escape:
-            self.clear_entry()
+            self.handle_escape()
         elif key == Qt.Key.Key_Delete:
             self.clear_all()
         
@@ -458,60 +514,88 @@ class ProgrammerCalculator(QMainWindow):
         self.operation = op
         self.new_number = True
         
-        # Add to history
+        # Update Pending Operation Label
         op_symbols = {
             "add": "+", "sub": "-", "mul": "*", "div": "/",
             "mod": "%", "and": "&", "or": "|", "xor": "^", "lshift": "<<"
         }
-        op_text = op_symbols.get(op, op)
-        # self.add_history(f"{self.format_value(self.stored_value)} {op_text}")
+        self.op_label.setText(op_symbols.get(op, op))
     
     def equals_pressed(self):
         """Handle equals button press"""
+        
+        # 1. Determine operands and operation
         if self.operation:
+            # Normal case: Pending operation
             a = self.stored_value
             b = self.current_value
+            op = self.operation
+            
+            # Save for repeat capability
+            self.last_operation = op
+            self.last_operand = b
+            
+        elif self.last_operation is not None:
+            # Repeat case: No pending op, use previous
+            a = self.current_value
+            b = self.last_operand
+            op = self.last_operation
+        else:
+            # Nothing to do
+            return
+
+        # 2. Calculate
+        try:
             result = 0
+            if op == "add":
+                result = a + b
+            elif op == "sub":
+                result = a - b
+            elif op == "mul":
+                result = a * b
+            elif op == "div":
+                result = int(a / b) if b != 0 else 0
+            elif op == "mod":
+                result = a % b if b != 0 else 0
+            elif op == "and":
+                result = a & b
+            elif op == "or":
+                result = a | b
+            elif op == "xor":
+                result = a ^ b
+            elif op == "lshift":
+                result = a << b
             
-            try:
-                if self.operation == "add":
-                    result = a + b
-                elif self.operation == "sub":
-                    result = a - b
-                elif self.operation == "mul":
-                    result = a * b
-                elif self.operation == "div":
-                    result = int(a / b) if b != 0 else 0
-                elif self.operation == "mod":
-                    result = a % b if b != 0 else 0
-                elif self.operation == "and":
-                    result = a & b
-                elif self.operation == "or":
-                    result = a | b
-                elif self.operation == "xor":
-                    result = a ^ b
-                elif self.operation == "lshift":
-                    result = a << b
-                
-                # Add to history
-                op_symbols = {
-                    "add": "+", "sub": "-", "mul": "*", "div": "/",
-                    "mod": "%", "and": "&", "or": "|", "xor": "^", "lshift": "<<"
-                }
-                op_text = op_symbols.get(self.operation, self.operation)
-                self.add_history(
-                    f"{self.format_value(a)} {op_text} {self.format_value(b)} = {self.format_value(result)}"
-                )
-                
-                self.current_value = result
-                self.operation = None
-                self.new_number = True
-                self.update_display()
+            # Add to history
+            op_symbols = {
+                "add": "+", "sub": "-", "mul": "*", "div": "/",
+                "mod": "%", "and": "&", "or": "|", "xor": "^", "lshift": "<<"
+            }
+            op_text = op_symbols.get(op, op)
+            self.add_history(
+                f"{self.format_value(a)} {op_text} {self.format_value(b)} = {self.format_value(result)}"
+            )
             
-            except Exception as e:
-                self.display.setText("Error")
-                print(f"Calculation error: {e}")
+            self.current_value = result
+            self.operation = None # Clear pending op
+            self.op_label.setText("") # Clear pending UI symbol
+            self.new_number = True
+            self.update_display()
+            
+        except Exception as e:
+            self.display.setText("Error")
+            print(f"Calculation error: {e}")
     
+    def handle_escape(self):
+        """Smart ESC: Clears pending Op first, then Number."""
+        if self.operation is not None:
+            # First press: Cancel pending operation
+            self.operation = None
+            self.op_label.setText("")
+        else:
+            # Second press (or no op): Clear current entry
+            self.clear_entry()
+
     def clear_entry(self):
         """Clear current entry"""
         self.current_value = 0
@@ -523,6 +607,11 @@ class ProgrammerCalculator(QMainWindow):
         self.current_value = 0
         self.stored_value = 0
         self.operation = None
+        self.op_label.setText("")
+        
+        self.last_operation = None
+        self.last_operand = None
+        
         self.new_number = True
         self.update_display()
     
@@ -532,9 +621,11 @@ class ProgrammerCalculator(QMainWindow):
         
         if mode:  # Hex
             hex_str = hex(value)[2:].upper() if value >= 0 else hex(value)[3:].upper()
-            prefix = "0x" if self.settings.value("hex_prefix", True, type=bool) else ""
+            prefix = "0x" if self.config.get("hex_prefix", True) else ""
             return f"{prefix}{hex_str}"
         else:  # Decimal
+            if self.config.get("show_commas", False):
+                return f"{value:,}"
             return str(value)
     
     def update_display(self):
@@ -543,12 +634,15 @@ class ProgrammerCalculator(QMainWindow):
         self.display.setText(self.format_value(self.current_value))
         
         # Alternative representations
-        hex_prefix = "0x" if self.settings.value("hex_prefix", True, type=bool) else ""
-        bin_prefix = "0b" if self.settings.value("bin_prefix", True, type=bool) else ""
+        hex_prefix = "0x" if self.config.get("hex_prefix", True) else ""
+        bin_prefix = "0b" if self.config.get("bin_prefix", True) else ""
         
         if self.hex_mode:
             # Show decimal and binary
             dec_str = str(self.current_value)
+            # Add commas to alt display if enabled? Usually alt display is raw, but consistency is good. 
+            # Let's keep alt display raw for readability unless requested otherwise.
+            
             bin_str = bin(self.current_value)[2:] if self.current_value >= 0 else bin(self.current_value)[3:]
             self.alt_display.setText(f"DEC: {dec_str}  BIN: {bin_prefix}{bin_str}")
         else:
@@ -569,8 +663,6 @@ class ProgrammerCalculator(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    
-    # app.setStyle("Fusion")  # Use Fusion style for consistent look
     qdarktheme.setup_theme()
     
     calculator = ProgrammerCalculator()
