@@ -1,0 +1,4 @@
+config.json
+dist/
+build/
+__pycache__/

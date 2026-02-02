@@ -1,30 +1,43 @@
 #!/usr/bin/env python3
 """
 Programmer's Calculator - A polished calculator with decimal/hex conversion
-Updated with JSON config, pending op display, and smart ESC.
+Updated with JSON config, pending op display, smart ESC, and Memory functions.
 """
 
 import sys
 import json
-import os
+import time
+import ctypes
+import base64
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QPushButton, QLabel, QDialog, QDialogButtonBox,
     QCheckBox, QFontDialog, QScrollArea, QFrame, QMessageBox
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QKeyEvent, QAction
+from PyQt6.QtCore import Qt, QByteArray
+from PyQt6.QtGui import QFont, QKeyEvent, QAction, QIcon, QPixmap
 import qdarktheme
+from icon import ICON_PNG_BASE64
 
+ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+    "proggercalc.proggercalc"
+)
+
+def icon_from_base64_png(b64: str) -> QIcon:
+    raw = base64.b64decode(b64)
+    ba = QByteArray(raw)
+
+    pixmap = QPixmap()
+    pixmap.loadFromData(ba, "PNG")
+
+    return QIcon(pixmap)
 
 def get_app_path():
     """Resolve the correct path for both script and frozen (PyInstaller) execution."""
     if getattr(sys, 'frozen', False):
-        # Running as compiled EXE
         return Path(sys.executable).parent
     else:
-        # Running as script
         return Path(__file__).parent
 
 
@@ -160,7 +173,8 @@ class ProgrammerCalculator(QMainWindow):
             "hex_prefix": True,
             "bin_prefix": True,
             "show_commas": False,
-            "display_font": None
+            "display_font": None,
+            "hex_mode": False
         }
         self.config_file = get_app_path() / "config.json"
 
@@ -169,19 +183,26 @@ class ProgrammerCalculator(QMainWindow):
         self.stored_value = 0
         self.operation = None
         
+        self.memory_value = 0
+        
+        self.clear_press_count = 0
+        self.last_clear_time = 0
+        
         # Repeat operation state
         self.last_operation = None
         self.last_operand = None
         
         self.hex_mode = False  # False = decimal, True = hex
         self.new_number = True
-        
+        self.load_settings()
+
         self.init_ui()
+        
         self.load_settings()
     
     def init_ui(self):
         """Initialize the user interface"""
-        self.setWindowTitle("Programmer's Calculator")
+        self.setWindowTitle("ProggerCalc")
         
         # Central widget and main layout
         central = QWidget()
@@ -197,7 +218,7 @@ class ProgrammerCalculator(QMainWindow):
         display_frame = QFrame()
         display_frame.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Sunken)
         display_layout = QVBoxLayout()
-        display_layout.setContentsMargins(10, 10, 10, 10)
+        display_layout.setContentsMargins(5, 5, 5, 5)
         
         # Top info row (Mode + Pending Op)
         info_layout = QHBoxLayout()
@@ -215,7 +236,9 @@ class ProgrammerCalculator(QMainWindow):
         
         # Pending Operation Indicator
         self.op_label = QLabel("")
-        self.op_label.setFont(mode_font)
+        op_font = QFont("Consolas", 20)
+        op_font.setBold(True)
+        self.op_label.setFont(op_font)
         self.op_label.setStyleSheet("color: #ffa500;") # Orange for visibility
         info_layout.addWidget(self.op_label)
         
@@ -234,6 +257,7 @@ class ProgrammerCalculator(QMainWindow):
         alt_font = QFont("Consolas", 9)
         self.alt_display.setFont(alt_font)
         self.alt_display.setStyleSheet("padding: 5px; background-color: #f5f5f5; color: #666;")
+        self.alt_display.setMaximumHeight(20)
         display_layout.addWidget(self.alt_display)
         
         display_frame.setLayout(display_layout)
@@ -244,21 +268,24 @@ class ProgrammerCalculator(QMainWindow):
         button_layout.setSpacing(4)
         
         # Button definitions (text, row, col, operation/value)
+        # Shifted other rows down by 1
         buttons = [
-            # Row 0
-            ("C", 0, 0, "clear"), ("CE", 0, 1, "clear_entry"), ("%", 0, 2, "mod"), ("/", 0, 3, "div"),
+            # Row 0 - Memory
+            ("MS", 0, 0, "mem_store"), ("MR", 0, 1, "mem_recall"), ("M+", 0, 2, "mem_add"), ("M-", 0, 3, "mem_sub"),
             # Row 1
-            ("7", 1, 0, 7), ("8", 1, 1, 8), ("9", 1, 2, 9), ("*", 1, 3, "mul"),
+            ("C", 1, 0, "clear"), ("CE", 1, 1, "clear_entry"), ("%", 1, 2, "mod"), ("/", 1, 3, "div"),
             # Row 2
-            ("4", 2, 0, 4), ("5", 2, 1, 5), ("6", 2, 2, 6), ("-", 2, 3, "sub"),
+            ("7", 2, 0, 7), ("8", 2, 1, 8), ("9", 2, 2, 9), ("*", 2, 3, "mul"),
             # Row 3
-            ("1", 3, 0, 1), ("2", 3, 1, 2), ("3", 3, 2, 3), ("+", 3, 3, "add"),
+            ("4", 3, 0, 4), ("5", 3, 1, 5), ("6", 3, 2, 6), ("-", 3, 3, "sub"),
             # Row 4
-            ("0", 4, 0, 0), ("AND", 4, 1, "and"), ("OR", 4, 2, "or"), ("=", 4, 3, "equals"),
-            # Row 5 - Hex digits
-            ("A", 5, 0, "A"), ("B", 5, 1, "B"), ("C", 5, 2, "C"), ("D", 5, 3, "D"),
-            # Row 6
-            ("E", 6, 0, "E"), ("F", 6, 1, "F"), ("XOR", 6, 2, "xor"), ("<<", 6, 3, "lshift"),
+            ("1", 4, 0, 1), ("2", 4, 1, 2), ("3", 4, 2, 3), ("+", 4, 3, "add"),
+            # Row 5
+            ("0", 5, 0, 0), ("AND", 5, 1, "and"), ("OR", 5, 2, "or"), ("=", 5, 3, "equals"),
+            # Row 6 - Hex digits
+            ("A", 6, 0, "A"), ("B", 6, 1, "B"), ("C", 6, 2, "C"), ("D", 6, 3, "D"),
+            # Row 7
+            ("E", 7, 0, "E"), ("F", 7, 1, "F"), ("XOR", 7, 2, "xor"), ("<<", 7, 3, "lshift"),
         ]
         
         self.buttons = {}
@@ -288,17 +315,24 @@ class ProgrammerCalculator(QMainWindow):
             elif action == "clear":
                 btn.clicked.connect(self.clear_all)
             elif action == "clear_entry":
-                btn.clicked.connect(self.handle_escape) # Map CE button to same smart logic if desired, or keep as clear_entry
+                btn.clicked.connect(self.handle_escape)
+            
+            elif action == "mem_store":
+                btn.clicked.connect(self.memory_store)
+                btn.setStyleSheet(btn.styleSheet() + "QPushButton { background-color: #3b3020; }")
+            elif action == "mem_recall":
+                btn.clicked.connect(self.memory_recall)
+                btn.setStyleSheet(btn.styleSheet() + "QPushButton { background-color: #3b3020; }")
+            elif action == "mem_add":
+                btn.clicked.connect(self.memory_add)
+                btn.setStyleSheet(btn.styleSheet() + "QPushButton { background-color: #3b3020; }")
+            elif action == "mem_sub":
+                btn.clicked.connect(self.memory_sub)
+                btn.setStyleSheet(btn.styleSheet() + "QPushButton { background-color: #3b3020; }")
             
             button_layout.addWidget(btn, row, col)
         
         calc_layout.addLayout(button_layout)
-        
-        # Mode switch hint
-        # hint = QLabel("Press 'C' for DEC mode, 'X' for HEX mode")
-        # hint.setStyleSheet("color: #666; font-size: 9pt;")
-        # hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # calc_layout.addWidget(hint)
         
         main_layout.addLayout(calc_layout)
         
@@ -314,6 +348,17 @@ class ProgrammerCalculator(QMainWindow):
         # Edit menu
         edit_menu = menubar.addMenu("&Edit")
         
+        copy_action = QAction("&Copy", self)
+        copy_action.setShortcut("Ctrl+C")
+        copy_action.triggered.connect(self.copy_to_clipboard)
+        edit_menu.addAction(copy_action)
+
+        paste_action = QAction("&Paste", self)
+        paste_action.setShortcut("Ctrl+V")
+        paste_action.triggered.connect(self.paste_from_clipboard)
+        edit_menu.addAction(paste_action)
+        
+        edit_menu.addSeparator()
         clear_history_action = QAction("Clear &History", self)
         clear_history_action.triggered.connect(self.history_panel.clear_history)
         edit_menu.addAction(clear_history_action)
@@ -333,7 +378,7 @@ class ProgrammerCalculator(QMainWindow):
         
         # Set window properties
         size_w = 700
-        size_h = 540
+        size_h = 580 # Increased slightly for new row
         self.setMinimumSize(size_w, size_h)
         self.setMaximumSize(size_w, size_h)
         self.resize(size_w, size_h)
@@ -344,6 +389,65 @@ class ProgrammerCalculator(QMainWindow):
         
         self.update_display()
         self.update_hex_buttons()
+        
+    def copy_to_clipboard(self):
+        """Copy value to clipboard based on active state"""
+        clipboard = QApplication.clipboard()
+        val_to_copy = 0
+
+        # Logic: Handle Pending Operations vs Idle State
+        if self.operation is not None:
+            # If op is pending, ONLY copy active right-hand operand if non-zero
+            if self.current_value != 0:
+                val_to_copy = self.current_value
+            else:
+                # Otherwise copy the left-hand operand (stored value)
+                val_to_copy = self.stored_value
+        else:
+            # No operation pending, copy current value
+            val_to_copy = self.current_value
+
+        # Format and copy to clipboard
+        clipboard.setText(self.format_value(val_to_copy))
+
+    def paste_from_clipboard(self):
+        """Paste value from clipboard"""
+        clipboard = QApplication.clipboard()
+        text = clipboard.text().strip()
+        
+        if not text:
+            return
+
+        # Clean cleanup (remove commas, spaces)
+        clean_text = text.replace(",", "").replace(" ", "")
+        
+        try:
+            # Attempt to parse
+            # Support 0x and 0b prefixes explicitly
+            if clean_text.lower().startswith("0x"):
+                new_val = int(clean_text, 16)
+            elif clean_text.lower().startswith("0b"):
+                new_val = int(clean_text, 2)
+            else:
+                # If in Hex mode, try base 16, otherwise base 10
+                if self.hex_mode:
+                    try:
+                        new_val = int(clean_text, 16)
+                    except ValueError:
+                        # Fallback to decimal if hex parse fails
+                        new_val = int(clean_text) 
+                else:
+                    new_val = int(clean_text)
+
+            # Logic: Overwrite current value
+            # Whether op is pending or not, we overwrite the 'active' input slot
+            self.current_value = new_val
+            self.new_number = False  # Treat as if user typed it
+            self.update_display()
+            
+        except ValueError:
+            # Silently ignore invalid pastes (or print to console)
+            print(f"Could not paste: {text}")
     
     def load_settings(self):
         """Load settings from JSON file"""
@@ -355,16 +459,20 @@ class ProgrammerCalculator(QMainWindow):
             except Exception as e:
                 print(f"Error loading config: {e}")
 
+        self.hex_mode = self.config.get("hex_mode", False)
+
         # Apply Font
         font_str = self.config.get("display_font")
         if font_str:
             font = QFont()
             if font.fromString(font_str):
-                self.display.setFont(font)
+                if hasattr(self, "display"):
+                    self.display.setFont(font)
     
     def save_settings(self):
         """Save settings to JSON file"""
         self.config["display_font"] = self.display.font().toString()
+        self.config["hex_mode"] = self.hex_mode
         try:
             with open(self.config_file, 'w') as f:
                 json.dump(self.config, f, indent=4)
@@ -393,10 +501,13 @@ class ProgrammerCalculator(QMainWindow):
 <tr><td><b>0-9</b></td><td>Number entry (numpad supported)</td></tr>
 <tr><td><b>A-F</b></td><td>Hex digits (in HEX mode)</td></tr>
 <tr><td><b>X</b></td><td>Toggle to HEX mode</td></tr>
+<tr><td><b>R</b></td><td>Memory Recall</td></tr>
+<tr><td><b>P</b></td><td>Memory Store</td></tr>
 <tr><td><b>+, -, *, /</b></td><td>Basic operations (numpad supported)</td></tr>
 <tr><td><b>%</b></td><td>Modulo</td></tr>
 <tr><td><b>Enter</b></td><td>Equals</td></tr>
-<tr><td><b>ESC</b></td><td>Clear pending op (1st press), then entry (2nd)</td></tr>
+<tr><td><b>ESC</b></td><td>Clear pending op (1st), entry (2nd)</td></tr>
+<tr><td><b>ESC x3</b></td><td>Clear Memory (within 2 secs)</td></tr>
 <tr><td><b>Delete</b></td><td>Clear all</td></tr>
 </table>
         """
@@ -406,11 +517,64 @@ class ProgrammerCalculator(QMainWindow):
         msg.setText(shortcuts)
         msg.exec()
     
+    # --- Memory Functions ---
+    def memory_store(self):
+        """Store current value to memory"""
+        self.memory_value = self.current_value
+        self.new_number = True # Generally start new number after store
+        self.update_mode_label()
+    
+    def memory_recall(self):
+        """Recall memory"""
+        if self.operation is not None or self.current_value == 0:
+            self.current_value = self.memory_value
+            self.new_number = False # Allow editing? Usually recall sets the number.
+            self.update_display()
+            
+    def memory_add(self):
+        """Add current to memory"""
+        self.memory_value += self.current_value
+        self.new_number = True
+        
+    def memory_sub(self):
+        """Subtract current from memory"""
+        self.memory_value -= self.current_value
+        self.new_number = True
+        
+    def check_clear_counter(self):
+        """Handle 3x press logic to clear memory"""
+        now = time.time()
+        
+        if now - self.last_clear_time > 1.0:
+            self.clear_press_count = 0
+            
+        self.clear_press_count += 1
+        self.last_clear_time = now
+        
+        if self.clear_press_count >= 3:
+            self.memory_value = 0
+            self.clear_press_count = 0
+            self.update_mode_label()
+            # Optional: Visual indication that memory is cleared could go here
+    
     def keyPressEvent(self, event: QKeyEvent):
         """Handle keyboard input"""
         key = event.key()
         text = event.text().upper()
+        modifiers = event.modifiers()
         
+        # --- NEW: Copy / Paste Shortcuts  ---
+        # Check Ctrl+C (Copy)
+        if (key == Qt.Key.Key_C and modifiers == Qt.KeyboardModifier.ControlModifier):
+            self.copy_to_clipboard()
+            return  # RETURN intentionally to prevent 'C' from typing in Hex mode
+
+        # Check Ctrl+V (Paste)
+        if (key == Qt.Key.Key_V and modifiers == Qt.KeyboardModifier.ControlModifier):
+            self.paste_from_clipboard()
+            return
+        # ---------------------------------------------
+
         # Number keys (including numpad)
         if key in [Qt.Key.Key_0, Qt.Key.Key_1, Qt.Key.Key_2, Qt.Key.Key_3, Qt.Key.Key_4,
                    Qt.Key.Key_5, Qt.Key.Key_6, Qt.Key.Key_7, Qt.Key.Key_8, Qt.Key.Key_9]:
@@ -421,14 +585,19 @@ class ProgrammerCalculator(QMainWindow):
         elif text in "ABCDEF" and self.hex_mode:
             self.hex_digit_pressed(text)
         
-        # Mode switching
+        # Mode switching (C key without Ctrl)
         elif text == 'C' and not self.hex_mode:
-            pass
+            self.clear_all() # C key maps to clear_all
         elif text == 'X':
             if self.hex_mode:
                 self.switch_mode(False)
             else:
                 self.switch_mode(True)
+
+        elif text == 'R':
+            self.memory_recall()
+        elif text == 'P':
+            self.memory_store()
         
         # Operations
         elif key in [Qt.Key.Key_Plus, Qt.Key.Key_Equal] and event.modifiers() == Qt.KeyboardModifier.ShiftModifier:
@@ -465,9 +634,15 @@ class ProgrammerCalculator(QMainWindow):
             return
         
         self.hex_mode = to_hex
-        self.mode_label.setText("HEX" if to_hex else "DEC")
+        self.update_mode_label()
         self.update_display()
         self.update_hex_buttons()
+        
+    def update_mode_label(self):
+        _str = "HEX" if self.hex_mode else "DEC"
+        if self.memory_value != 0:
+            _str += f" (M)"
+        self.mode_label.setText(_str)
     
     def update_hex_buttons(self):
         """Enable/disable hex buttons based on mode"""
@@ -494,6 +669,9 @@ class ProgrammerCalculator(QMainWindow):
         if not self.hex_mode:
             return
         
+        if letter is None or len(letter) != 1:
+            return
+        
         value = ord(letter) - ord('A') + 10
         
         if self.new_number:
@@ -503,7 +681,7 @@ class ProgrammerCalculator(QMainWindow):
             self.current_value = (self.current_value * 16) + value
         
         self.update_display()
-    
+
     def operation_pressed(self, op):
         """Handle operation button press"""
         if self.operation and not self.new_number:
@@ -588,6 +766,8 @@ class ProgrammerCalculator(QMainWindow):
     
     def handle_escape(self):
         """Smart ESC: Clears pending Op first, then Number."""
+        self.check_clear_counter() # Check if memory should be cleared
+
         if self.operation is not None:
             # First press: Cancel pending operation
             self.operation = None
@@ -604,6 +784,8 @@ class ProgrammerCalculator(QMainWindow):
     
     def clear_all(self):
         """Clear all"""
+        self.check_clear_counter() # Check if memory should be cleared
+
         self.current_value = 0
         self.stored_value = 0
         self.operation = None
@@ -640,9 +822,6 @@ class ProgrammerCalculator(QMainWindow):
         if self.hex_mode:
             # Show decimal and binary
             dec_str = str(self.current_value)
-            # Add commas to alt display if enabled? Usually alt display is raw, but consistency is good. 
-            # Let's keep alt display raw for readability unless requested otherwise.
-            
             bin_str = bin(self.current_value)[2:] if self.current_value >= 0 else bin(self.current_value)[3:]
             self.alt_display.setText(f"DEC: {dec_str}  BIN: {bin_prefix}{bin_str}")
         else:
@@ -664,6 +843,8 @@ class ProgrammerCalculator(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     qdarktheme.setup_theme()
+    icon = icon_from_base64_png(ICON_PNG_BASE64)
+    app.setWindowIcon(icon)
     
     calculator = ProgrammerCalculator()
     calculator.show()
