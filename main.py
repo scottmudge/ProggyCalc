@@ -6,13 +6,13 @@ Enhanced with 3D buttons, gradient background, button animations, and LCD displa
 Now with configurable hex display modes (Relative, Signed, Unsigned) and integer sizes.
 """
 
+import os
 import sys
 import json
 import time
-import ctypes
 import base64
+import platform
 from pathlib import Path
-import os
 from platformdirs import user_config_dir
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -21,7 +21,10 @@ from PyQt6.QtWidgets import (
     QGraphicsColorizeEffect, QSizePolicy, QComboBox, QGroupBox,
     QGraphicsDropShadowEffect
 )
-from PyQt6.QtCore import Qt, QByteArray, pyqtSignal, QPropertyAnimation, QSequentialAnimationGroup, QPauseAnimation
+from PyQt6.QtCore import (
+    Qt, QByteArray, pyqtSignal, QPropertyAnimation, QSequentialAnimationGroup, QPauseAnimation,
+    qInstallMessageHandler
+)
 from PyQt6.QtGui import QFont, QKeyEvent, QAction, QIcon, QPixmap, QColor, QPalette, QLinearGradient
 try:
     import qdarktheme
@@ -30,9 +33,11 @@ except ImportError:
 from icon import ICON_PNG_BASE64
 import platformdirs
 
-ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-    "tatertech.proggycalc"
-)
+if platform.system() == 'Windows':
+    import ctypes
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+        "tatertech.proggycalc"
+    )
 
 APP_NAME = "ProggyCalc"
 APP_AUTHOR = "Tatertech"
@@ -46,6 +51,17 @@ WINDOW_MARGINS = 5  # Margin between window border and contents (in pixels)
 LAYOUT_SPACING = 4  # Spacing between widgets and layouts (in pixels)
 
 CONFIG_DIR = Path(user_config_dir(APP_NAME, APP_AUTHOR))
+
+def suppress_painter_warnings(msg_type, context, message):
+    # Suppress only QPainter and QWidgetEffectSourcePrivate warnings
+    if "QPainter::" in message or "QWidgetEffectSourcePrivate" in message:
+        return
+
+    # Let everything else through normally
+    print(message)
+
+# Install before creating QApplication
+qInstallMessageHandler(suppress_painter_warnings)
 
 def icon_from_base64_png(b64: str) -> QIcon:
     raw = base64.b64decode(b64)
