@@ -3,6 +3,7 @@
 Programmer's Calculator - A polished calculator with decimal/hex conversion
 Updated with JSON config, pending op display, smart ESC, and Memory functions.
 Enhanced with 3D buttons, gradient background, button animations, and LCD display.
+Now with configurable hex display modes (Relative, Signed, Unsigned) and integer sizes.
 """
 
 import sys
@@ -15,7 +16,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QPushButton, QLabel, QDialog, QDialogButtonBox,
     QCheckBox, QFontDialog, QScrollArea, QFrame, QMessageBox,
-    QGraphicsColorizeEffect, QSizePolicy
+    QGraphicsColorizeEffect, QSizePolicy, QComboBox, QGroupBox
 )
 from PyQt6.QtCore import Qt, QByteArray, pyqtSignal, QPropertyAnimation, QSequentialAnimationGroup, QPauseAnimation
 from PyQt6.QtGui import QFont, QKeyEvent, QAction, QIcon, QPixmap, QColor, QPalette, QLinearGradient
@@ -163,7 +164,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.resize(275, 150)
+        self.resize(350, 300)
         
         layout = QVBoxLayout()
         
@@ -181,6 +182,53 @@ class SettingsDialog(QDialog):
         self.commas_check = QCheckBox("Show thousands separator (e.g. 1,000)")
         self.commas_check.setChecked(parent.config.get("show_commas", False))
         layout.addWidget(self.commas_check)
+        
+        layout.addSpacing(10)
+        
+        # Hex Display Mode Group
+        hex_group = QGroupBox("Hexadecimal Display Mode")
+        hex_layout = QVBoxLayout()
+        
+        # Hex display mode selector
+        mode_layout = QHBoxLayout()
+        mode_label = QLabel("Mode:")
+        self.hex_mode_combo = QComboBox()
+        self.hex_mode_combo.addItems(["Relative", "Signed", "Unsigned"])
+        current_mode = parent.config.get("hex_display_mode", "relative")
+        mode_index = {"relative": 0, "signed": 1, "unsigned": 2}.get(current_mode, 0)
+        self.hex_mode_combo.setCurrentIndex(mode_index)
+        self.hex_mode_combo.currentIndexChanged.connect(self.on_hex_mode_changed)
+        mode_layout.addWidget(mode_label)
+        mode_layout.addWidget(self.hex_mode_combo)
+        mode_layout.addStretch()
+        hex_layout.addLayout(mode_layout)
+        
+        # Integer size selector
+        size_layout = QHBoxLayout()
+        size_label = QLabel("Integer Size:")
+        self.int_size_combo = QComboBox()
+        self.int_size_combo.addItems(["8-bit", "16-bit", "32-bit", "64-bit", "128-bit"])
+        current_size = parent.config.get("integer_size", 64)
+        size_index = {8: 0, 16: 1, 32: 2, 64: 3, 128: 4}.get(current_size, 3)
+        self.int_size_combo.setCurrentIndex(size_index)
+        size_layout.addWidget(size_label)
+        size_layout.addWidget(self.int_size_combo)
+        size_layout.addStretch()
+        hex_layout.addLayout(size_layout)
+        
+        # Info label
+        self.mode_info_label = QLabel()
+        self.mode_info_label.setWordWrap(True)
+        self.mode_info_label.setStyleSheet("color: #888; font-size: 9pt; padding: 5px;")
+        hex_layout.addWidget(self.mode_info_label)
+        
+        hex_group.setLayout(hex_layout)
+        layout.addWidget(hex_group)
+        
+        # Update info label and size combo state
+        self.on_hex_mode_changed()
+        
+        layout.addSpacing(10)
         
         # Font selection
         font_layout = QHBoxLayout()
@@ -215,6 +263,24 @@ class SettingsDialog(QDialog):
         self.setLayout(layout)
         self.selected_font = None
         self.selected_hist_font = None
+    
+    def on_hex_mode_changed(self):
+        """Update UI when hex display mode changes"""
+        mode = self.hex_mode_combo.currentText().lower()
+        
+        # Enable/disable integer size based on mode
+        is_relative = (mode == "relative")
+        self.int_size_combo.setEnabled(not is_relative)
+        
+        # Update info label
+        if mode == "relative":
+            info = "Negative values shown with minus sign (e.g., -0x15)"
+        elif mode == "signed":
+            info = "Signed arithmetic: allows negative results (e.g., 0x0 - 0x1 = -0x1)"
+        else:  # unsigned
+            info = "Unsigned arithmetic: wraps around (e.g., 0x0 - 0x1 = 0xFF...)"
+        
+        self.mode_info_label.setText(info)
     
     def choose_font(self):
         """Open font dialog"""
@@ -326,7 +392,9 @@ class ProgrammerCalculator(QMainWindow):
             "bin_prefix": True,
             "show_commas": False,
             "display_font": None,
-            "hex_mode": False
+            "hex_mode": False,
+            "hex_display_mode": "relative",  # relative, signed, unsigned
+            "integer_size": 64  # 8, 16, 32, 64, 128 bits
         }
         self.config_file = get_app_path() / "config.json"
 
@@ -352,6 +420,50 @@ class ProgrammerCalculator(QMainWindow):
         self.init_ui()
         
         self.load_settings()
+    
+    def get_bit_mask(self):
+        """Get the bit mask for current integer size"""
+        size = self.config.get("integer_size", 64)
+        return (1 << size) - 1
+    
+    def get_sign_bit(self):
+        """Get the sign bit position for current integer size"""
+        size = self.config.get("integer_size", 64)
+        return 1 << (size - 1)
+    
+    def apply_integer_size(self, value):
+        """Apply integer size constraints based on hex display mode"""
+        mode = self.config.get("hex_display_mode", "relative")
+        
+        if mode == "relative":
+            # No constraints in relative mode
+            return value
+        
+        size = self.config.get("integer_size", 64)
+        mask = self.get_bit_mask()
+        
+        if mode == "unsigned":
+            # Wrap to unsigned range [0, 2^size - 1]
+            # Always positive, wraps around
+            return value & mask
+        else:  # signed
+            # Signed range: [-2^(size-1), 2^(size-1) - 1]
+            max_positive = (1 << (size - 1)) - 1  # e.g., 127 for 8-bit
+            min_negative = -(1 << (size - 1))     # e.g., -128 for 8-bit
+            
+            # First normalize to signed range
+            if value > max_positive:
+                # Wrap down from positive overflow
+                range_size = (1 << size)
+                while value > max_positive:
+                    value -= range_size
+            elif value < min_negative:
+                # Wrap up from negative overflow
+                range_size = (1 << size)
+                while value < min_negative:
+                    value += range_size
+            
+            return value
     
     def init_ui(self):
         """Initialize the user interface"""
@@ -432,7 +544,6 @@ class ProgrammerCalculator(QMainWindow):
             QLabel {
                 color: #00ff00;
                 background: transparent;
-                text-shadow: 0 0 10px #00ff00;
             }
         """)
         self.display_layout.addWidget(self.display)
@@ -859,9 +970,18 @@ class ProgrammerCalculator(QMainWindow):
                     # Default to decimal if no obvious hex indicators
                     val = int(clean_text)
             
-            # Convert from two's complement if it looks like a large value
-            if val > (1 << 63):
-                val = val - (1 << 64)
+            # Handle negative values based on display mode
+            mode = self.config.get("hex_display_mode", "relative")
+            if mode != "relative":
+                # Convert from two's complement if it looks like a large value
+                size = self.config.get("integer_size", 64)
+                max_val = (1 << size) - 1
+                if val > max_val:
+                    val = val - (1 << size)
+            else:
+                # In relative mode, handle standard Python large ints
+                if val > (1 << 63):
+                    val = val - (1 << 64)
             
             # 3. Format the integer into the CURRENT active mode
             final_text = self.format_value(val)
@@ -923,9 +1043,18 @@ class ProgrammerCalculator(QMainWindow):
                 else:
                     new_val = int(clean_text)
 
-            # Convert from two's complement if necessary
-            if new_val > (1 << 63):
-                new_val = new_val - (1 << 64)
+            # Handle negative values based on display mode
+            mode = self.config.get("hex_display_mode", "relative")
+            if mode != "relative":
+                # Convert from two's complement if necessary
+                size = self.config.get("integer_size", 64)
+                max_val = (1 << size) - 1
+                if new_val > max_val:
+                    new_val = new_val - (1 << size)
+            else:
+                # In relative mode, handle standard Python large ints
+                if new_val > (1 << 63):
+                    new_val = new_val - (1 << 64)
 
             # Logic: Overwrite current value
             self.current_value = new_val
@@ -988,6 +1117,14 @@ class ProgrammerCalculator(QMainWindow):
             self.config["hex_prefix"] = dialog.hex_prefix_check.isChecked()
             self.config["bin_prefix"] = dialog.bin_prefix_check.isChecked()
             self.config["show_commas"] = dialog.commas_check.isChecked()
+            
+            # Apply hex display mode settings
+            mode_text = dialog.hex_mode_combo.currentText().lower()
+            self.config["hex_display_mode"] = mode_text
+            
+            size_text = dialog.int_size_combo.currentText()
+            size_value = int(size_text.split("-")[0])  # Extract number from "64-bit"
+            self.config["integer_size"] = size_value
             
             if dialog.selected_font:
                 self.display.setFont(dialog.selected_font)
@@ -1219,6 +1356,8 @@ class ProgrammerCalculator(QMainWindow):
             else:
                 self.current_value = (self.current_value * 10) + num
         
+        # Apply integer size constraints based on mode
+        self.current_value = self.apply_integer_size(self.current_value)
         self.update_display()
     
     def hex_digit_pressed(self, letter):
@@ -1237,6 +1376,8 @@ class ProgrammerCalculator(QMainWindow):
         else:
             self.current_value = (self.current_value * 16) + value
         
+        # Apply integer size constraints based on mode
+        self.current_value = self.apply_integer_size(self.current_value)
         self.update_display()
 
     def operation_pressed(self, op):
@@ -1303,6 +1444,9 @@ class ProgrammerCalculator(QMainWindow):
             elif op == "rshift":
                 result = a >> b
             
+            # Apply integer size constraints to result
+            result = self.apply_integer_size(result)
+            
             # Add to history
             op_symbols = {
                 "add": "+", "sub": "-", "mul": "*", "div": "/",
@@ -1357,16 +1501,52 @@ class ProgrammerCalculator(QMainWindow):
         self.update_display()
     
     def format_value(self, value, force_mode=None):
-        """Format value based on current mode with proper negative hex handling"""
+        """Format value based on current mode with configurable negative hex handling"""
         mode = force_mode if force_mode is not None else self.hex_mode
         
         if mode:  # Hex
-            if value < 0:
-                # Use 64-bit two's complement for negative numbers
-                value = (1 << 64) + value
-            hex_str = hex(value)[2:].upper()
-            prefix = "0x" if self.config.get("hex_prefix", True) else ""
-            return f"{prefix}{hex_str}"
+            hex_display_mode = self.config.get("hex_display_mode", "relative")
+            
+            if hex_display_mode == "relative":
+                # Relative mode: Show negative hex values with minus sign
+                if value < 0:
+                    hex_str = hex(-value)[2:].upper()
+                    prefix = "0x" if self.config.get("hex_prefix", True) else ""
+                    return f"-{prefix}{hex_str}"
+                else:
+                    hex_str = hex(value)[2:].upper()
+                    prefix = "0x" if self.config.get("hex_prefix", True) else ""
+                    return f"{prefix}{hex_str}"
+                    
+            elif hex_display_mode == "signed":
+                # Signed mode: Show negative values with minus sign, positive in hex
+                size = self.config.get("integer_size", 64)
+                hex_digits = size // 4
+                prefix = "0x" if self.config.get("hex_prefix", True) else ""
+                
+                if value < 0:
+                    # Show as negative hex
+                    hex_str = hex(-value)[2:].upper().zfill(hex_digits)
+                    return f"-{prefix}{hex_str}"
+                else:
+                    hex_str = hex(value)[2:].upper().zfill(hex_digits)
+                    return f"{prefix}{hex_str}"
+                    
+            else:  # unsigned
+                # Unsigned mode: Always use two's complement representation (no negatives)
+                size = self.config.get("integer_size", 64)
+                mask = (1 << size) - 1
+                hex_digits = size // 4
+                
+                # Convert negative to two's complement
+                if value < 0:
+                    value = (value & mask)
+                else:
+                    value = value & mask
+                
+                hex_str = hex(value)[2:].upper().zfill(hex_digits)
+                prefix = "0x" if self.config.get("hex_prefix", True) else ""
+                return f"{prefix}{hex_str}"
         else:  # Decimal
             if self.config.get("show_commas", False):
                 return f"{value:,}"
@@ -1383,12 +1563,31 @@ class ProgrammerCalculator(QMainWindow):
         hex_prefix = "0x" if self.config.get("hex_prefix", True) else ""
         bin_prefix = "0b" if self.config.get("bin_prefix", True) else ""
         
-        # For binary representation, handle negatives with two's complement
-        if self.current_value < 0:
-            bin_val = (1 << 64) + self.current_value
-            bin_str = bin(bin_val)[2:]
+        hex_display_mode = self.config.get("hex_display_mode", "relative")
+        
+        # For binary and alternative hex representation, handle based on mode
+        if hex_display_mode == "relative" or hex_display_mode == "signed":
+            # In relative or signed mode, show negative values with minus sign
+            if self.current_value < 0:
+                bin_val = -self.current_value
+                bin_str = "-" + bin(bin_val)[2:]
+                hex_val = -self.current_value
+                hex_str = "-" + hex(hex_val)[2:].upper()
+            else:
+                bin_str = bin(self.current_value)[2:]
+                hex_str = hex(self.current_value)[2:].upper()
         else:
-            bin_str = bin(self.current_value)[2:]
+            # In unsigned mode, use two's complement
+            size = self.config.get("integer_size", 64)
+            mask = (1 << size) - 1
+            
+            if self.current_value < 0:
+                display_val = (self.current_value & mask)
+            else:
+                display_val = self.current_value & mask
+            
+            bin_str = bin(display_val)[2:]
+            hex_str = hex(display_val)[2:].upper()
         
         if self.hex_mode:
             # Show decimal and binary
@@ -1396,11 +1595,6 @@ class ProgrammerCalculator(QMainWindow):
             self.alt_display.setText(f"DEC: {dec_str}  BIN: {bin_prefix}{bin_str}")
         else:
             # Show hex and binary
-            if self.current_value < 0:
-                hex_val = (1 << 64) + self.current_value
-                hex_str = hex(hex_val)[2:].upper()
-            else:
-                hex_str = hex(self.current_value)[2:].upper()
             self.alt_display.setText(f"HEX: {hex_prefix}{hex_str}  BIN: {bin_prefix}{bin_str}")
     
     def add_history(self, text):
