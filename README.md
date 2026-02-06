@@ -18,6 +18,9 @@ ProggyCalc is a programming and reverse-engineering focused calculator focused o
 * Bit-wise operations for `AND`, `OR`, `XOR`, and left and right bit-shift.
 * Simple arithmatic operations including add, subtract, multiply, and divide.
 * Two main display modes: decimal and hex.
+* Three "hex modes": signed (overflow at signed limits), unsigned (overflow at unsigned limits), and relative (same as decimal mode, numbers go infinitely positive or negative).
+* Configurable integer size for signed and unsigned hex modes, from 8 to 128 bits.
+* Configurable fonts - I like [Monaspace Krypton](https://github.com/githubnext/monaspace) for the display (same as screenshot).
 * A smaller display beneath the main number display showing the alternate (hex if decimal, or visa-vera) and binary representations of the number.
 * Memory register to store a value, with associated key bindings.
 * Visual feedback for clear, clear everything, copy, paste, memory store, and memory restore.
