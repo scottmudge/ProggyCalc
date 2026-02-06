@@ -443,13 +443,11 @@ class ProgrammerCalculator(QMainWindow):
         self.alt_display.setFont(alt_font)
         self.alt_display.setStyleSheet("""
             QLabel {
-                padding: 1px; 
-                background: rgba(0, 40, 0, 100);
+                padding: 0px; 
+                background: rgba(50, 80, 50, 60);
                 color: #66ff66;
                 border-radius: 3px;
                 border: 1px groove #0a0a0a;
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #274027, stop:0.5 #264026, stop:1 #2d4f2d);
             }
         """)
         self.alt_display.setMaximumHeight(20)
