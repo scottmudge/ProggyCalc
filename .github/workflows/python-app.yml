@@ -1,0 +1,46 @@
+name: Build ProggyCalc
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pyqtdarktheme --ignore-requires-python
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller ProggyCalc.spec
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProggyCalc-${{ runner.os }}
+          path: |
+            dist/ProggyCalc.exe
+            dist/ProggyCalc
