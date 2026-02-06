@@ -2,7 +2,7 @@
 """
 Programmer's Calculator - A polished calculator with decimal/hex conversion
 Updated with JSON config, pending op display, smart ESC, and Memory functions.
-Enhanced with 3D buttons, gradient background, and button animations.
+Enhanced with 3D buttons, gradient background, button animations, and LCD display.
 """
 
 import sys
@@ -378,6 +378,17 @@ class ProgrammerCalculator(QMainWindow):
         # Display area (full width at top)
         self.display_frame = QFrame()
         self.display_frame.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Sunken)
+        
+        # LCD-style background with subtle grid pattern
+        self.display_frame.setStyleSheet("""
+            QFrame {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #1a3a1a, stop:0.5 #132813, stop:1 #0d1f0d);
+                border: 2px solid #0a0a0a;
+                border-radius: 8px;
+            }
+        """)
+        
         self.display_layout = QVBoxLayout()
         self.display_layout.setContentsMargins(5, 5, 5, 5)
         
@@ -390,7 +401,7 @@ class ProgrammerCalculator(QMainWindow):
         mode_font.setBold(True)
         mode_font.setPointSize(9)
         self.mode_label.setFont(mode_font)
-        self.mode_label.setStyleSheet("color: #0066cc;")
+        self.mode_label.setStyleSheet("color: #00ff00; background: transparent; border: 0px solid #0a0a0a;")
         info_layout.addWidget(self.mode_label)
         
         info_layout.addStretch()
@@ -400,7 +411,7 @@ class ProgrammerCalculator(QMainWindow):
         op_font = QFont("Tahoma", 14)
         op_font.setBold(True)
         self.op_label.setFont(op_font)
-        self.op_label.setStyleSheet("color: #ffa500;") # Orange for visibility
+        self.op_label.setStyleSheet("color: #ffaa00; background: transparent; border: 0px solid #0a0a0a;")
         self.op_label.setMaximumHeight(22)
         self.op_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         info_layout.addWidget(self.op_label)
@@ -409,19 +420,38 @@ class ProgrammerCalculator(QMainWindow):
         
         self.display_effect = None
         
-        # Main display
+        # Main display with LCD-style text
         self.display = QLabel("0")
         self.display.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         display_font = QFont("Consolas", 24)
+        display_font.setWeight(QFont.Weight.Bold)
         self.display.setFont(display_font)
         self.display.setMinimumHeight(60)
+        # LCD green glow effect
+        self.display.setStyleSheet("""
+            QLabel {
+                color: #00ff00;
+                background: transparent;
+                text-shadow: 0 0 10px #00ff00;
+            }
+        """)
         self.display_layout.addWidget(self.display)
         
-        # Alternative representations
+        # Alternative representations with LCD styling
         self.alt_display = QLabel("HEX: 0x0  BIN: 0b0")
         alt_font = QFont("Consolas", 9)
         self.alt_display.setFont(alt_font)
-        self.alt_display.setStyleSheet("padding: 5px; background-color: #f5f5f5; color: #666;")
+        self.alt_display.setStyleSheet("""
+            QLabel {
+                padding: 1px; 
+                background: rgba(0, 40, 0, 100);
+                color: #66ff66;
+                border-radius: 3px;
+                border: 1px groove #0a0a0a;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #274027, stop:0.5 #264026, stop:1 #2d4f2d);
+            }
+        """)
         self.alt_display.setMaximumHeight(20)
         self.display_layout.addWidget(self.alt_display)
         
@@ -831,6 +861,10 @@ class ProgrammerCalculator(QMainWindow):
                     # Default to decimal if no obvious hex indicators
                     val = int(clean_text)
             
+            # Convert from two's complement if it looks like a large value
+            if val > (1 << 63):
+                val = val - (1 << 64)
+            
             # 3. Format the integer into the CURRENT active mode
             final_text = self.format_value(val)
             
@@ -890,6 +924,10 @@ class ProgrammerCalculator(QMainWindow):
                         new_val = int(clean_text) 
                 else:
                     new_val = int(clean_text)
+
+            # Convert from two's complement if necessary
+            if new_val > (1 << 63):
+                new_val = new_val - (1 << 64)
 
             # Logic: Overwrite current value
             self.current_value = new_val
@@ -1321,11 +1359,14 @@ class ProgrammerCalculator(QMainWindow):
         self.update_display()
     
     def format_value(self, value, force_mode=None):
-        """Format value based on current mode"""
+        """Format value based on current mode with proper negative hex handling"""
         mode = force_mode if force_mode is not None else self.hex_mode
         
         if mode:  # Hex
-            hex_str = hex(value)[2:].upper() if value >= 0 else hex(value)[3:].upper()
+            if value < 0:
+                # Use 64-bit two's complement for negative numbers
+                value = (1 << 64) + value
+            hex_str = hex(value)[2:].upper()
             prefix = "0x" if self.config.get("hex_prefix", True) else ""
             return f"{prefix}{hex_str}"
         else:  # Decimal
@@ -1344,15 +1385,24 @@ class ProgrammerCalculator(QMainWindow):
         hex_prefix = "0x" if self.config.get("hex_prefix", True) else ""
         bin_prefix = "0b" if self.config.get("bin_prefix", True) else ""
         
+        # For binary representation, handle negatives with two's complement
+        if self.current_value < 0:
+            bin_val = (1 << 64) + self.current_value
+            bin_str = bin(bin_val)[2:]
+        else:
+            bin_str = bin(self.current_value)[2:]
+        
         if self.hex_mode:
             # Show decimal and binary
             dec_str = str(self.current_value)
-            bin_str = bin(self.current_value)[2:] if self.current_value >= 0 else bin(self.current_value)[3:]
             self.alt_display.setText(f"DEC: {dec_str}  BIN: {bin_prefix}{bin_str}")
         else:
             # Show hex and binary
-            hex_str = hex(self.current_value)[2:].upper() if self.current_value >= 0 else hex(self.current_value)[3:].upper()
-            bin_str = bin(self.current_value)[2:] if self.current_value >= 0 else bin(self.current_value)[3:]
+            if self.current_value < 0:
+                hex_val = (1 << 64) + self.current_value
+                hex_str = hex(hex_val)[2:].upper()
+            else:
+                hex_str = hex(self.current_value)[2:].upper()
             self.alt_display.setText(f"HEX: {hex_prefix}{hex_str}  BIN: {bin_prefix}{bin_str}")
     
     def add_history(self, text):
