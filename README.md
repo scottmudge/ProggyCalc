@@ -1,5 +1,7 @@
 # ProggyCalc
 
+[![Build ProggyCalc](https://github.com/scottmudge/ProggyCalc/actions/workflows/python-app.yml/badge.svg)](https://github.com/scottmudge/ProggyCalc/actions/workflows/python-app.yml)
+
 The programmer's simple, effective calculator.
 
 ## Description
